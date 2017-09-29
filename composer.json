@@ -1,8 +1,8 @@
 {
-    "name": "vbuck/auctane-shipstation",
+    "name": "bubbleupdev/mage-shipstation",
     "type": "magento-module",
     "license": "MIT",
-    "homepage": "http://www.magentocommerce.com/magento-connect/shipstation.html",
+    "homepage": "https://marketplace.magento.com/auctane-api.html",
     "description": "ShipStation integration for Magento",
     "authors": [
         {

@@ -1,5 +1,4 @@
 <?php
-
 /**
  * ShipStation
  *
@@ -17,32 +16,57 @@
  * @package    Auctane_Api
  * @license    http://opensource.org/licenses/osl-3.0.php  Open Software License (OSL 3.0)
  */
-class Auctane_Api_Helper_Data extends Mage_Core_Helper_Data {
 
-    private $_strBundleSku = '';
-
+class Auctane_Api_Helper_Data extends Mage_Core_Helper_Data
+{
+    /**
+     * Exclude product type
+     */
+    const TYPE_CONFIGURABLE = 'configurable';
+    const TYPE_GROUPED = 'grouped';
+    
     /**
      * Write a source object to an XML stream, mapping fields via a fieldset.
      * Fieldsets are nodes in config.xml
      * 
-     * @param string $fieldset
+     * @param string $fieldSet
      * @param array|Varien_Object $source
      * @param XMLWriter $xml
      */
-    public function fieldsetToXml($fieldset, $source, XMLWriter $xml, $isBundle = 0) {
-        $fields = (array) Mage::getConfig()->getFieldset($fieldset);
+    public function fieldsetToXml($fieldSet, $source, XMLWriter $xml, $isBundle = 0)
+    {
+        $fields = (array) Mage::getConfig()->getFieldset($fieldSet);
         //Check for the importing the child product settings
-        $intImportChildProducts = Mage::getStoreConfig('auctaneapi/general/import_child_products');
         foreach ($fields as $field => $dest) {
             if (!$dest->auctaneapi)
                 continue;
 
             $name = $dest->auctaneapi == '*' ? $field : $dest->auctaneapi;
-            $value = $source instanceof Varien_Object ? $source->getDataUsingMethod($field) : @$source[$field];
+            $sourceField = '';
+            if (isset($source[$field])) 
+                $sourceField = $source[$field];
+            
+            $value = $source instanceof Varien_Object ? $source->getDataUsingMethod($field) : $sourceField;
+            if ($name == 'ImageUrl') {
+                //Image directory path
+                $mediaDir = Mage::getBaseUrl(Mage_Core_Model_Store::URL_TYPE_MEDIA);
+                //get the image set from the admin
+                $value = $mediaDir. 'catalog/product' . $source->getSmallImage();
+                if ($source->getSmallImage() == 'no_selection') {
+                    $value = $mediaDir. 'catalog/product' . $source->getThumbnail();
+                } elseif ($source->getThumbnail() == 'no_selection') {
+                    $value = $mediaDir. 'catalog/product' . $source->getImage();
+                }
+             }
             //Set the child item price of bundle products to 0
-            if ($isBundle == 1 && $name == 'UnitPrice' && $intImportChildProducts == 1) {
-                $value = 0;
+            if ($isBundle == 1 && ($name == 'UnitPrice' || $name == 'Weight')) {
+                $value = '0.00';
             }
+	        // set price as a decimal if empty
+            if(($name == 'UnitPrice') && !$value) {
+                $value = '0.00';   
+            }
+            
             $xml->startElement((string) $name);
             if (is_numeric($value)) {
                 $xml->text((string) $value);
@@ -55,24 +79,26 @@ class Auctane_Api_Helper_Data extends Mage_Core_Helper_Data {
 
     /**
      * Write discounts info to order
+     * 
      * @param array $discount
      * @param XMLWriter $xml
      */
-    public function writeDiscountsInfo(array $discounts, XMLWriter $xml) {
-        foreach ($discounts as $rule => $total) {
-            $salesRule = Mage::getModel('salesrule/rule')->load($rule);
-
-            if (!$salesRule->getId()) {
-                continue;
-            }
-
+    public function writeDiscountsInfo(array $discounts, XMLWriter $xml)
+    {
+        //Get the rule ids
+        $keys = array_keys($discounts);
+        //Get the rule details from rule id's
+        $collection = Mage::getModel('salesrule/rule')->getCollection();
+        $collection->addFieldToSelect(array('name'))
+                   ->addFieldToFilter('rule_id', array('in' => $keys));
+        
+        foreach ($collection as $rule) {
             $xml->startElement('Item');
-
             $xml->startElement('SKU');
-            $xml->writeCdata($salesRule->getCouponCode() ? $salesRule->getCouponCode() : 'AUTOMATIC_DISCOUNT');
+            $xml->writeCdata($rule->getCode() ? $rule->getCode() : 'AUTOMATIC_DISCOUNT');
             $xml->endElement();
             $xml->startElement('Name');
-            $xml->writeCdata($salesRule->getName());
+            $xml->writeCdata($rule->getName());
             $xml->endElement();
             $xml->startElement('Adjustment');
             $xml->writeCdata('true');
@@ -81,19 +107,20 @@ class Auctane_Api_Helper_Data extends Mage_Core_Helper_Data {
             $xml->text(1);
             $xml->endElement();
             $xml->startElement('UnitPrice');
-            $xml->text(-$total);
+            $xml->text(-$discounts[$rule->getId()]);
             $xml->endElement();
-
             $xml->endElement();
         }
     }
 
     /**
      * Write purchase order info to order
+     * 
      * @param Mage_Sales_Model_Order $order
      * @param XMLWriter $xml
      */
-    public function writePoNumber($order, $xml) {
+    public function writePoNumber($order, $xml)
+    {
         $payment = $order->getPayment();
         $xml->startElement('PO');
         if ($payment) {
@@ -104,30 +131,38 @@ class Auctane_Api_Helper_Data extends Mage_Core_Helper_Data {
 
     /**
      * @return array of string names
-     * @see "auctane_exclude" nodes in config.xml
      */
-    public function getIncludedProductTypes() {
-        static $types;
-        if (!isset($types)) {
-            $types = Mage::getModel('catalog/product_type')->getTypes();
-            $types = array_filter($types, create_function('$type', 'return !@$type["auctane_exclude"];'));
+    public function getIncludedProductTypes()
+    {
+        $types = Mage::getModel('catalog/product_type')->getTypes();
+        
+        //Remove the configurable product from the list
+        if(array_key_exists(self::TYPE_CONFIGURABLE, $types)) {
+            unset($types[self::TYPE_CONFIGURABLE]);
         }
+        //Remove the grouped product from the list 
+        /*if(array_key_exists(self::TYPE_GROUPED, $types)) {
+            unset($types[self::TYPE_GROUPED]);
+        }*/       
         return array_keys($types);
     }
 
     /**
-     * Indicate if a {$type} is specifically excluded by config
+     * Indicate if a {$type} is excluded
      * 
      * @param string $type
      * @return bool
      */
-    public function isExcludedProductType($type) {
-        static $types;
-        if (!isset($types)) {
-            $types = Mage::getModel('catalog/product_type')->getTypes();
-            $types = array_filter($types, create_function('$type', 'return (bool) @$type["auctane_exclude"];'));
+    public function isExcludedProductType($type)
+    {
+        //Check the configurable or grouped product type
+        //if(($type == self::TYPE_CONFIGURABLE) || ($type == self::TYPE_GROUPED)) {
+	if(($type == self::TYPE_CONFIGURABLE)) {
+            return 1;
+        } else {
+            return 0;
         }
-        return isset($types[$type]);
+
     }
 
     /**
@@ -135,7 +170,8 @@ class Auctane_Api_Helper_Data extends Mage_Core_Helper_Data {
      * 
      * @return string
      */
-    public function getModuleList() {
+    public function getModuleList()
+    {
         $modules = array_keys((array) Mage::getConfig()->getNode('modules')->children());
         return implode(',', $modules);
     }
@@ -146,35 +182,9 @@ class Auctane_Api_Helper_Data extends Mage_Core_Helper_Data {
      * @param int $store
      * @return int
      */
-    public function getExportPriceType($store) {
+    public function getExportPriceType($store)
+    {
         return Mage::getStoreConfig('auctaneapi/general/export_price', $store);
-    }
-
-    /**
-     * Get bundle items for specific bundle product
-     * 
-     * @param int $bundleProductId
-     * @return array()
-     */
-    public function getBundleItems($bundleProductId) {
-        try {
-
-            $bundledProduct = new Mage_Catalog_Model_Product();
-            $bundledProduct->load($bundleProductId);
-            $selectionCollection = $bundledProduct->getTypeInstance(true)->getSelectionsCollection(
-                    $bundledProduct->getTypeInstance(true)->getOptionsIds($bundledProduct), $bundledProduct
-            );
-            $bundleItems = array();
-            foreach ($selectionCollection as $option) {
-                // Assign bundle product items to global array.
-                $bundleItems[] = $option->product_id;
-            }
-
-            return $bundleItems;
-        } catch (Exception $e) {
-            Mage::log($e->getMessage());
-            return array();
-        }
     }
 
 }
